@@ -1,3 +1,4 @@
+
 pipeline {
     agent any
 
@@ -23,6 +24,22 @@ pipeline {
         stage('Build - Imagen Docker') {
             steps {
                 sh 'docker build -t $IMAGE:$TAG .'
+            }
+        }
+
+        stage('Test - Pruebas unitarias') {
+            steps {
+                sh '''
+                    docker run --rm -e SECRET_KEY=test-ci $IMAGE:$TAG python -c "
+import app as m
+c = m.create_app(database_path='/tmp/test.db').test_client()
+assert c.get('/health').status_code == 200,      'health != 200'
+assert c.get('/health').get_json() == {'status': 'ok'}, 'health payload'
+assert c.get('/login').status_code == 200,       'login != 200'
+assert c.get('/').status_code == 302,            'index sin sesion no redirige'
+print('Pruebas unitarias OK')
+"
+                '''
             }
         }
 
@@ -57,6 +74,7 @@ pipeline {
                     docker run -d --name $APP -p 8000:8000 \
                         -e HOST=0.0.0.0 -e SECRET_KEY=ci-pipeline-secret-$BUILD_NUMBER \
                         $IMAGE:$TAG
+                    echo "Esperando readiness de la app..."
                     for i in $(seq 1 30); do
                         if curl -sf $TARGET/health >/dev/null 2>&1; then echo "App arriba"; break; fi
                         sleep 2
@@ -83,4 +101,3 @@ pipeline {
         }
     }
 }
-
