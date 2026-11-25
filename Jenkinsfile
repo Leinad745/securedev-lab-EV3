@@ -86,7 +86,7 @@ print('Pruebas unitarias OK')
         stage('DAST - OWASP ZAP (app en ejecución)') {
             steps {
                 sh '''
-                    zap.sh -cmd -quickurl $TARGET -quickprogress \
+                    zap.sh -cmd -port 8090 -quickurl $TARGET -quickprogress \
                         -quickout $WORKSPACE/zap_report.html || true
                 '''
             }
