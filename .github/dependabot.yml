@@ -1,0 +1,27 @@
+# Gestión automática de dependencias — EV3 OCY1102
+# Dependabot abre Pull Requests cuando hay versiones nuevas o CVEs en las dependencias.
+version: 2
+updates:
+  # 1) Dependencias Python de la aplicación (pip / requirements.txt)
+  - package-ecosystem: "pip"
+    directory: "/"                 # requirements.txt está en la raíz del repo
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+  # 2) Imagen base del Dockerfile (python:3.11-slim-bookworm)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "docker"
+      - "security"
