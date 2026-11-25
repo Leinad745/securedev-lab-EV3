@@ -5,7 +5,10 @@ services:
     build: .
     environment:
       DATABASE_PATH: /data/securedev.db
-      SECRET_KEY: clave-insegura-solo-laboratorio
+      # V-03: el secreto ya NO está hardcodeado; se exige por el entorno del host.
+      # Levantar con:  SECRET_KEY=$(openssl rand -hex 32) docker compose up -d --build
+      SECRET_KEY: ${SECRET_KEY:?Define SECRET_KEY en el entorno antes de levantar}
+      HOST: 0.0.0.0
     volumes:
       - app_data:/data
     ports:

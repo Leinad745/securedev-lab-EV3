@@ -1,10 +1,16 @@
-"""Aplicación deliberadamente vulnerable para la evaluación OCY1102 EV3.
+"""Aplicación OCY1102 EV3 — versión CORREGIDA (hardening DevSecOps).
 
-Solo debe ejecutarse en el laboratorio local. El alumnado debe revisar y corregir
-los defectos; estos comentarios no enumeran las respuestas de la evaluación.
+Correcciones aplicadas respecto de la versión vulnerable:
+  V-01  SQL Injection en /search  -> consulta parametrizada (CWE-89 / OWASP A03)
+  V-02  XSS almacenado            -> se elimina `| safe` en templates/ticket.html (CWE-79 / A03)
+  V-03  SECRET_KEY débil          -> se exige por variable de entorno, sin valor por defecto inseguro (A02/A05)
+  V-04  IDOR / control de acceso  -> se verifica propiedad del ticket antes de mostrarlo/comentarlo (A01 / CWE-639)
+  V-05  Bind 0.0.0.0              -> host configurable por entorno, por defecto 127.0.0.1 (CWE-605)
+  V-06  Cabeceras de seguridad    -> CSP, X-Frame-Options, X-Content-Type-Options, cookies seguras (A05)
 """
 
 import os
+import secrets
 import sqlite3
 import time
 from pathlib import Path
@@ -32,7 +38,26 @@ LOGIN_FAILURES = Counter(
 
 def create_app(database_path=None):
     app = Flask(__name__)
-    app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "clave-insegura-solo-laboratorio")
+
+    # --- V-03: SECRET_KEY segura ---------------------------------------------
+    # Se exige por variable de entorno. Si no existe, se genera una aleatoria
+    # (no predecible) en vez de usar un valor hardcodeado conocido.
+    secret_key = os.getenv("SECRET_KEY")
+    if not secret_key:
+        secret_key = secrets.token_hex(32)
+        app.logger.warning(
+            "SECRET_KEY no definida; se generó una temporal aleatoria. "
+            "Defina SECRET_KEY en el entorno para producción."
+        )
+    app.config["SECRET_KEY"] = secret_key
+
+    # --- V-06: cookies de sesión seguras -------------------------------------
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,   # no accesible por JavaScript
+        SESSION_COOKIE_SAMESITE="Lax",  # mitiga CSRF
+        SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "0") == "1",  # True tras HTTPS
+    )
+
     app.config["DATABASE_PATH"] = str(
         database_path or os.getenv("DATABASE_PATH", str(Path(__file__).with_name("securedev.db")))
     )
@@ -59,6 +84,16 @@ def create_app(database_path=None):
             endpoint = request.endpoint or "unknown"
             HTTP_REQUESTS.labels(endpoint, request.method, str(response.status_code)).inc()
             HTTP_DURATION.labels(endpoint).observe(time.perf_counter() - g.request_started_at)
+        return response
+
+    # --- V-06: cabeceras de seguridad en todas las respuestas ----------------
+    @app.after_request
+    def set_security_headers(response):
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "default-src 'self'"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
         return response
 
     with app.app_context():
@@ -146,6 +181,9 @@ def create_app(database_path=None):
         ).fetchone()
         if item is None:
             abort(404)
+        # --- V-04: control de acceso -> solo el dueño ve su ticket -----------
+        if item["owner_id"] != current_user():
+            abort(403)
         comments = db().execute(
             "SELECT body FROM comments WHERE ticket_id = ? ORDER BY id", (ticket_id,)
         ).fetchall()
@@ -155,8 +193,14 @@ def create_app(database_path=None):
     def add_comment(ticket_id):
         if not current_user():
             return redirect(url_for("login"))
-        if db().execute("SELECT id FROM tickets WHERE id = ?", (ticket_id,)).fetchone() is None:
+        owner = db().execute(
+            "SELECT owner_id FROM tickets WHERE id = ?", (ticket_id,)
+        ).fetchone()
+        if owner is None:
             abort(404)
+        # --- V-04: solo el dueño comenta su propio ticket --------------------
+        if owner["owner_id"] != current_user():
+            abort(403)
         body = request.form.get("body", "")
         db().execute(
             "INSERT INTO comments (ticket_id, author_id, body) VALUES (?, ?, ?)",
@@ -170,8 +214,12 @@ def create_app(database_path=None):
         if not current_user():
             return redirect(url_for("login"))
         query = request.args.get("q", "")
-        sql = f"SELECT id, title FROM tickets WHERE title LIKE '%{query}%' ORDER BY id"
-        tickets = db().execute(sql).fetchall()
+        # --- V-01: SQL Injection -> consulta parametrizada -------------------
+        like = f"%{query}%"
+        tickets = db().execute(
+            "SELECT id, title FROM tickets WHERE owner_id = ? AND title LIKE ? ORDER BY id",
+            (current_user(), like),
+        ).fetchall()
         return render_template("search.html", tickets=tickets, query=query)
 
     @app.get("/health")
@@ -186,4 +234,7 @@ def create_app(database_path=None):
 
 
 if __name__ == "__main__":
-    create_app().run(host="0.0.0.0", port=8000)
+    # --- V-05: host configurable; por defecto 127.0.0.1 ----------------------
+    # En contenedor se expone con HOST=0.0.0.0 (definido en el Dockerfile/compose).
+    host = os.getenv("HOST", "127.0.0.1")
+    create_app().run(host=host, port=8000)
